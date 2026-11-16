@@ -1,0 +1,7 @@
+# CPU inference, tested on Python 3.11 in Linux GitHub Actions
+numpy>=1.26,<2
+transformers==4.46.3
+ray[default]==2.40.0
+# Install matching CPU PyTorch separately for reproducibility:
+# pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+

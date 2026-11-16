@@ -1,0 +1,50 @@
+name: Research CPU checks
+on:
+  push:
+    paths:
+      - 'research/**'
+      - '.github/workflows/research.yml'
+  workflow_dispatch:
+    inputs:
+      full_matrix:
+        description: 'Run all 144 workloads (long CPU benchmark)'
+        required: false
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      HF_HUB_DISABLE_XET: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-only PyTorch
+        run: python -m pip install --prefer-binary torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+      - name: Install experiments dependencies
+        run: python -m pip install --prefer-binary -r research/requirements.txt
+      - name: Verify independent algorithm and dataset tests
+        run: python -m unittest discover -s research/tests -v
+      - name: Run real Ray and GPT-2 inference, pilot or full matrix
+        run: |
+          if [ '${{ github.event.inputs.full_matrix }}' = 'true' ]; then
+            python -m research.runner --limit 0 --repeats 3 --warmup 1 --output research/results/full
+          else
+            python -m research.runner --limit 4 --repeats 1 --warmup 0 --output research/results/pilot
+          fi
+      - name: Upload measured results, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-research-results
+          path: research/results/
+          if-no-files-found: warn
+
