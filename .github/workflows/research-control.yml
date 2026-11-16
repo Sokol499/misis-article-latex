@@ -1,0 +1,38 @@
+name: Fair monolithic versus Ray controls, 144 scenarios
+on:
+  push:
+    paths:
+      - '.github/workflows/research-control.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      HF_HUB_DISABLE_XET: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU inference dependencies
+        run: |
+          python -m pip install --prefer-binary torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --prefer-binary -r research/requirements.txt
+      - name: All unit tests
+        run: python -m unittest discover -s research/tests -v
+      - name: Run B0, optimized monolith B1 and distributed D3 for all 144 cases
+        run: python -m research.runner --model sshleifer/tiny-gpt2 --limit 0 --modes B0,B1,D3 --repeats 3 --warmup 1 --output research/results/fair_control
+      - name: Save raw measurements even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fair-monolithic-control-results
+          path: research/results/
+          if-no-files-found: warn
+

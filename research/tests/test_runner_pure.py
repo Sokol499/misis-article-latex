@@ -1,5 +1,5 @@
 import unittest
-from research.runner import boundaries_for_layers, predicted_payload
+from research.runner import boundaries_for_layers, predicted_payload, MODES
 
 class RunnerPureTests(unittest.TestCase):
     def test_tiny_boundaries(self):
@@ -12,6 +12,9 @@ class RunnerPureTests(unittest.TestCase):
         self.assertEqual(predicted_payload('D1',*args),4_020_560)
         self.assertEqual(predicted_payload('D2',*args),4_020_560)
         self.assertEqual(predicted_payload('D3',*args),160)
+    def test_fair_monolithic_mode(self):
+        self.assertIn('B1',MODES)
+        self.assertEqual(predicted_payload('B1',16,8,50257),0)
     def test_one_token(self):
         self.assertEqual(predicted_payload('D0',1,1,10),40)
         self.assertEqual(predicted_payload('D3',1,1,10),8)

@@ -16,7 +16,7 @@ import time
 from research.partition import optimal_partition, brute_force_partition, synthetic_case
 from research.workloads import build_workloads, write_workloads
 
-MODES=('B0','D0','D1','D2','D3')
+MODES=('B0','B1','D0','D1','D2','D3')
 
 
 def boundaries_for_layers(n_layers:int, k:int=3):
@@ -126,8 +126,20 @@ def monolithic_greedy(model,input_ids,steps):
     return ids[len(input_ids):]
 
 
+def monolithic_optimized_greedy(model,input_ids,steps):
+    """Fair optimized monolithic control: only last-position LM head projection."""
+    import torch
+    ids=list(input_ids)
+    with torch.inference_mode():
+        for _ in range(steps):
+            last_hidden=model.transformer(input_ids=torch.tensor([ids]),use_cache=False).last_hidden_state[:,-1:,:]
+            logits=model.lm_head(last_hidden)
+            ids.append(int(logits[0,-1,:].argmax()))
+    return ids[len(input_ids):]
+
+
 def predicted_payload(mode,initial_length,steps,vocab_size,batch=1,element_bytes=4,token_bytes=8):
-    if mode=='B0': return 0
+    if mode in ('B0','B1'): return 0
     if mode=='D0': return batch*vocab_size*element_bytes*(steps*initial_length+steps*(steps-1)//2)
     if mode in ('D1','D2'): return batch*vocab_size*element_bytes*steps
     if mode=='D3': return batch*token_bytes*steps
@@ -198,6 +210,7 @@ def benchmark(args):
                 for repeat in range(args.repeats):
                     t0=time.perf_counter()
                     if mode=='B0': result=monolithic_greedy(model,ids,steps); payload=0
+                    elif mode=='B1': result=monolithic_optimized_greedy(model,ids,steps); payload=0
                     else: result,payload=distributed_greedy(ray,actors,ids,steps,mode)
                     elapsed=time.perf_counter()-t0
                     match=(result==expected)
