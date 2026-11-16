@@ -82,9 +82,11 @@ def make_shard_class(ray):
     return GPT2ShardActor
 
 
-def create_pipeline(ray,model_name,n_layers,k=3,resources=None):
+def create_pipeline(ray,model_name,n_layers,k=3,resources=None,bounds=None):
     Actor=make_shard_class(ray)
-    bounds=boundaries_for_layers(n_layers,k)
+    bounds=list(bounds) if bounds is not None else boundaries_for_layers(n_layers,k)
+    if len(bounds)!=k+1 or bounds[0]!=0 or bounds[-1]!=n_layers or any(b<a for a,b in zip(bounds,bounds[1:])):
+        raise ValueError(f'Invalid layer boundaries: {bounds}')
     actors=[]
     for i in range(k):
         options={}
@@ -153,7 +155,22 @@ def benchmark(args):
     ray.init(address=args.ray_address if args.ray_address else None,
              include_dashboard=False, ignore_reinit_error=True,
              **({} if args.ray_address else {'num_cpus':max(4,args.shards+1)}))
-    actors,metadata=create_pipeline(ray,args.model,n_layers,args.shards)
+    bounds=None
+    partition_metadata={'method':'equal-layer-count'}
+    if args.bounds:
+        bounds=[int(x) for x in args.bounds.split(',')]
+        partition_metadata={'method':'user-provided','boundaries':bounds}
+    if args.profile_json:
+        if bounds is not None: raise ValueError('Use either --bounds or --profile-json')
+        from research.partition import optimal_partition
+        profile=json.loads(Path(args.profile_json).read_text(encoding='utf-8'))
+        plan=optimal_partition(profile['compute_ms'], profile['memory_mib'],profile['limits_mib'],
+            profile.get('link_ms'),profile.get('fixed_mem_mib'))
+        if plan is None: raise RuntimeError('No feasible partition for cost profile')
+        bounds=list(plan.boundaries)
+        partition_metadata={'method':'cost-model-dynamic-programming','boundaries':bounds,
+            'predicted_ms':plan.predicted_ms,'profile_provenance':profile.get('provenance','unspecified')}
+    actors,metadata=create_pipeline(ray,args.model,n_layers,args.shards,bounds=bounds)
     runtime={'host':platform.platform(),'python':platform.python_version(),
              'torch':torch.__version__,'ray':ray.__version__,
              'model':args.model,'transformer_layers':n_layers,
@@ -161,7 +178,7 @@ def benchmark(args):
              'logical_ray_nodes':len(ray.nodes()),'actors':metadata,
              'cases_evaluated':len(selected),'total_cases_generated':len(cases),
              'warmup':args.warmup,'repetitions':args.repeats,
-             'modes':stage_modes,
+             'modes':stage_modes,'partition':partition_metadata,
              'warning':'Times from THIS host only; local Ray nodes are not physical servers; payload bytes exclude transport/RPC overhead.'}
     (output/'environment.json').write_text(json.dumps(runtime,ensure_ascii=False,indent=2),encoding='utf-8')
     fields=('case_id','category','mode','repeat','prompt_tokens','new_tokens',
@@ -213,6 +230,8 @@ def main():
     ap.add_argument('--shards',type=int,default=3)
     ap.add_argument('--ray-address',default='')
     ap.add_argument('--seed',type=int,default=42)
+    ap.add_argument('--bounds',default='',help='Optional comma-separated boundaries e.g. 0,1,3,6')
+    ap.add_argument('--profile-json',default='',help='JSON cost profile for automatic DP partition')
     a=ap.parse_args()
     if a.limit<0 or a.limit>144 or a.repeats<1 or a.warmup<0: ap.error('Invalid limit/repeats/warmup')
     benchmark(a)
