@@ -1,0 +1,37 @@
+name: DistilGPT2 six-layer validation
+on:
+  push:
+    paths:
+      - '.github/workflows/research-distil.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      HF_HUB_DISABLE_XET: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-only inference dependencies
+        run: |
+          python -m pip install --prefer-binary torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --prefer-binary -r research/requirements.txt
+      - name: Verify algorithm and dataset unit tests
+        run: python -m unittest discover -s research/tests -v
+      - name: Verify six-layer DistilGPT2 across three Ray actors
+        run: python -m research.runner --model distilbert/distilgpt2 --limit 4 --repeats 1 --warmup 0 --output research/results/distilgpt2
+      - name: Preserve benchmark data even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: distilgpt2-validation-results
+          path: research/results/
+          if-no-files-found: warn
