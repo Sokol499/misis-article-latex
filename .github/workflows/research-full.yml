@@ -1,0 +1,37 @@
+name: Complete 144-scenario Ray CPU experiment
+on:
+  push:
+    paths:
+      - '.github/workflows/research-full.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      HF_HUB_DISABLE_XET: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-only PyTorch and research dependencies
+        run: |
+          python -m pip install --prefer-binary torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --prefer-binary -r research/requirements.txt
+      - name: Verify all correctness tests
+        run: python -m unittest discover -s research/tests -v
+      - name: Benchmark all 144 scenarios in B0 and D0-D3, three repeats
+        run: python -m research.runner --model sshleifer/tiny-gpt2 --limit 0 --repeats 3 --warmup 1 --output research/results/full
+      - name: Upload raw data even if execution fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-144-cpu-research-results
+          path: research/results/
+          if-no-files-found: warn
