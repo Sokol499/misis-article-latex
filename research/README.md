@@ -50,3 +50,5 @@ PY
 
 For the academic paper, see the parent repository. Habr posts must be written and published by their human author in accordance with the platform's current authoring rules.
 
+
+See [measured results and limitations](RESEARCH_EVIDENCE.md) and [author notes](HABR_AUTHOR_NOTES.md). The source runs are in [evidence/run_artifacts.zip](evidence/run_artifacts.zip).
