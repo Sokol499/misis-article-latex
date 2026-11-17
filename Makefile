@@ -12,7 +12,7 @@ example:
 	mkdir -p example/build
 	cd example && $(LATEX) -o build example.tex
 
-# Export a self-contained copy of the actual article, excluding the template's demo.
+# Создать переносимый архив статьи с необходимыми исходниками без демонстрационного примера.
 dist:
 	rm -rf dist
 	mkdir -p dist/misis-article/sections dist/misis-article/scripts

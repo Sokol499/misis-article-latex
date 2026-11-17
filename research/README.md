@@ -1,54 +1,98 @@
-# Experimental practice for PZ-4 — distributed Transformer inference
+# Практическое исследование распределённого инференса Transformer-моделей
 
-This is a **new independent, auditable implementation** consistent with the NIR6 architecture. The original `distributed-llm-ray-nir` source code was not supplied to this workspace; no claim is made that this modifies the original project.
+**ПЗ-4 / продолжение НИР.** Это самостоятельная программная реализация на основе описанной архитектуры НИР. Исходники прежнего проекта `distributed-llm-ray-nir` в данном репозитории **не размещены**; представленный код не является его прямым изменением.
 
-## What is implemented
+## Что реализовано
 
-- Real CPU inference with Hugging Face `sshleifer/tiny-gpt2` using Ray remote actors. Shards execute different contiguous GPT-2 blocks in distinct processes. The default GitHub Actions environment is **one physical VM and one Ray node**, not a three-node physical cluster.
-- Monolithic B0 and distributed D0, D1, D2, D3 variants. D0 returns `[B,L,V]` logits; D1 computes all logits but returns `[B,V]`; D2 computes last-position logits only; D3 computes last-position `argmax` inside the last actor and returns `int64` IDs.
-- A deterministic, independently authored set of 144 workload definitions (4 categories × 3 stems × 4 input lengths × 3 output lengths). Source prompts are constructed by repetition/truncation at token-ID level, NOT independent natural-language prompts; effective diversity is 12 stems. Not a model-training dataset.
-- Strict token-level verification versus monolithic greedy decoding; mismatches are recorded and fail the run.
-- Actual wall-clock timings on the running CPU, plus the *raw logical payload bytes* passed back by the last stage, deliberately distinguished from measured NIC traffic.
-- Exact dynamic programming for ordered layer partition with per-stage compute times, memory limits and per-boundary communication costs; tested against brute force. The built-in example uses explicitly **synthetic cost data**, not a claimed measured speedup on Mac or external servers.
+- **Подлинный инференс** предобученной `sshleifer/tiny-gpt2` через три удалённых процесса Ray Actor на CPU. Исполнители содержат разные последовательные части модели.
+- **Монолитные контроли B0 и B1.** B0 применяет стандартную полную выходную проекцию, B1 рассчитывает логиты только последней позиции.
+- **Распределённые режимы D0–D3:** D0 возвращает `[B,L,V]`, D1 — `[B,V]` после полного вычисления, D2 вычисляет только последнюю позицию и возвращает `[B,V]`, D3 дополнительно выполняет `argmax` на последнем исполнителе и возвращает `int64` идентификатор.
+- **Авторский набор из 144 нагрузочных сценариев:** 4 категории × 3 исходных текста × 4 длины входа × 3 длины генерации. Тексты детерминированно повторяются и обрезаются на уровне токенов: фактически имеется **12 исходных текстовых шаблонов**, а не 144 независимо написанных естественных запроса. Это нагрузочный набор, не датасет обучения модели.
+- **Проверка корректности:** последовательности сгенерированных токенов сопоставляются с монолитным эталоном; случаи несовпадения сохраняются и приводят к ошибке запуска.
+- **Реальные измерения:** время выполнения, число токенов, метаданные окружения и **размер возвращаемого массива**. Счётчик `payload_bytes` не измеряет TCP/IP-трафик, сериализацию или служебные сообщения Ray.
+- **Математическая оптимизация:** динамическое программирование распределяет последовательные группы Transformer-слоёв с учётом заданных времён вычисления, ограничения памяти и связи между стадиями. Корректность сверяется с полным перебором. Демонстрационный профиль затрат **синтетический**.
+- **Переход к более сложной модели:** выполнены тесты шестислойной `distilbert/distilgpt2`, в том числе равномерное и выбранное алгоритмом разбиение блоков.
 
-## Running
+## Подтверждённые результаты
 
-Python 3.11 is recommended. On a machine with Python, pip and enough disk space:
+| Проверка | Фактический результат | Источник |
+| --- | --- | --- |
+| Tiny-gpt2: полная нагрузка B0 и D0–D3 | 144 сценария × 5 режимов × 3 повтора = **2160 измерений**, без несовпадений токенов | [GitHub Actions](https://github.com/Sokol499/misis-article-latex/actions/runs/43957992903) |
+| Равноценная оптимизация монолита B1 | 144 × 3 режима × 3 повтора = **1296 измерений**, без несовпадений | [GitHub Actions](https://github.com/Sokol499/misis-article-latex/actions/runs/43959669451) |
+| DistilGPT2 (шесть блоков) | Режимы B0 и D0–D3; **20/20** проверок совпадения | [GitHub Actions](https://github.com/Sokol499/misis-article-latex/actions/runs/43958295945) |
+| Равномерное и выбранное DP-разбиение | Два фактически выполненных варианта на DistilGPT2, **80/80** проверок | [GitHub Actions](https://github.com/Sokol499/misis-article-latex/actions/runs/43959252024) |
+| Алгоритм и спецификация нагрузки | **14 модульных тестов** | [GitHub Actions](https://github.com/Sokol499/misis-article-latex/actions/workflows/research.yml) |
 
-```sh
-python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu  # Linux CPU runner
+Сводная интерпретация чисел и ограничения приведены в [отчёте об экспериментах](RESEARCH_EVIDENCE.md). Исходные результаты основной серии — [в CSV](data/measurements_tiny_gpt2_2160.csv), определения нагрузок — [в JSONL](data/workloads_tiny_gpt2_144.jsonl); остальные первичные результаты собраны в [архиве](evidence/run_artifacts.zip) и артефактах GitHub Actions.
+
+В основной серии медиана задержки D0 составила **178,48 мс**, D3 — **71,36 мс**. Но D3 изменяет и объём вычислений, и размер выходного массива, поэтому эффект нельзя приписывать одной лишь передаче данных. В отдельной контрольной серии B1 оказался быстрее D3 (**6,15 мс** против **43,95 мс**): на очень маленькой модели удалённые вызовы Ray способны перекрывать выгоду оптимизации.
+
+## Как запустить на Linux CPU
+
+Нужны Python 3.11, доступ к пакетам Python и возможность загрузить публичные веса модели из Hugging Face. В корне репозитория:
+
+```bash
+python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r research/requirements.txt
 python -m unittest discover -s research/tests -v
-python -m research.runner --model sshleifer/tiny-gpt2 --limit 4 --repeats 2 --output research/results/pilot
-python -m research.runner --model sshleifer/tiny-gpt2 --limit 0 --repeats 3 --output research/results/full
 ```
 
-On Apple Silicon macOS, install a compatible PyTorch from the official instructions instead of the Linux-only CPU index; Ray workers use CPU, not Metal/MPS. Start with pilot runs and monitor memory before running all 144.
+Пилотный прогон четырёх сценариев (не репрезентативен для полной матрицы):
 
-The `--limit 4` option runs only four of 144 cases; `--limit 0` runs the full matrix. The four first scenarios share the same source text and are **not representative**; a full experiment must examine all categories, lengths and variability. `environment.json` records version, logical nodes and actor PIDs; `measurements.csv` has times and correctness; `mismatches.json` preserves discrepancies; `workloads.jsonl` contains all 144 workloads. The full study needs repetitions, fixed local hardware and critical review of the resulting measurements.
+```bash
+python -m research.runner --model sshleifer/tiny-gpt2 --limit 4 --repeats 2 --output research/results/pilot
+```
 
-Run the partition optimizer and compare to exhaustive enumeration:
+Полный прогон 144 сценариев:
 
-```sh
+```bash
+python -m research.runner --model sshleifer/tiny-gpt2 --limit 0 --repeats 3 --warmup 1 --output research/results/full
+```
+
+Проверка DistilGPT2 на шести блоках:
+
+```bash
+python -m research.runner --model distilbert/distilgpt2 --limit 4 --repeats 1 --output research/results/distil_pilot
+```
+
+Проверка динамического программирования сравнением с перебором:
+
+```bash
 python - <<'PY'
 from research.partition import synthetic_case, optimal_partition, brute_force_partition
-s = synthetic_case(12, 3)
-print('DP:', optimal_partition(*s))
-print('Brute force:', brute_force_partition(*s))
+sample = synthetic_case(12, 3)
+print('Динамическое программирование:', optimal_partition(*sample))
+print('Полный перебор:', brute_force_partition(*sample))
 PY
 ```
 
-## Methodological limitations
+Параметр `--limit 4` выполняет только первые четыре сценария (они имеют один и тот же базовый текст), `--limit 0` — все 144. В файлах `environment.json`, `measurements.csv`, `mismatches.json`, `workloads.jsonl` фиксируются среда, показатели времени и корректности, ошибки и входные данные. Исходные тексты и идентификаторы токенов сохраняются для воспроизводимости.
 
-1. Original NIR tests and times were on a different host: no implied Mac timing equivalence.
-2. Without KV-cache, every new token recomputes the complete context. A larger model may be extremely slow.
-3. The synthetic partition-cost example proves mathematical correctness *for that cost model*, not real optimality; measured per-stage profiles must replace it for real deployment.
-4. The observed returned-array `nbytes` is not true TCP/IP, Ray serialization or physical Ethernet traffic.
-5. Run on a *single-node Ray process cluster* by default; the original three Docker Ray nodes are a separate existing NIR result and this module must not be mislabeled as equivalent without additional execution.
-6. Report failed cases, exhausted memory and token mismatches instead of silently excluding them.
-7. A genuine experiment needs artifacts of raw timings and platform information, not just analytical estimates.
+### Apple Silicon (MacBook M1 Pro)
 
-For the academic paper, see the parent repository. Habr posts must be written and published by their human author in accordance with the platform's current authoring rules.
+**На MacBook эта исследовательская серия ещё не воспроизводилась.** Для macOS PyTorch следует устанавливать по [официальной инструкции](https://pytorch.org/get-started/locally/), а не из Linux-индекса `whl/cpu`. В данном модуле Ray Actors ориентированы на CPU; нельзя считать, что Linux-контейнеры используют графический ускоритель Metal/MPS. Начинать стоит с небольшого пилота и мониторинга памяти.
 
+## Организация файлов
 
-See [measured results and limitations](RESEARCH_EVIDENCE.md) and [author notes](HABR_AUTHOR_NOTES.md). The source runs are in [evidence/run_artifacts.zip](evidence/run_artifacts.zip).
+| Путь | Назначение |
+| --- | --- |
+| `runner.py` | Реальное исполнение модели и запись метрик, режимы B0/B1/D0–D3 |
+| `partition.py` | Математическая оптимизация разбиения и полный перебор |
+| `workloads.py` | Генератор 144 сценариев |
+| `tests/` | Независимые модульные проверки (14 тестов) |
+| `profiles/heterogeneous_6layer_synthetic.json` | **Синтетические**, не измеренные значения стоимости |
+| `data/` | Полная сохранённая серия tiny-gpt2 и нагрузки |
+| `evidence/` | Дополнительные результаты выполненных CI-запусков |
+| `RESEARCH_EVIDENCE.md` | Отчёт о подтверждённых результатах и ограничениях |
+| `HABR_AUTHOR_NOTES.md` | Проверяемые факты для самостоятельной публикации на Хабре |
+
+## Ограничения
+
+1. Все новые измерения получены на **одной Linux CPU-машине GitHub Actions** с одним Ray-узлом и тремя удалёнными актор-процессами. Исходный трёхузловой Docker-кластер — отдельный результат НИР, не тождественный этим испытаниям.
+2. Не реализован KV-cache. На каждом шаге генерации выполняется повторный проход по всему контексту; большой контекст увеличивает время.
+3. Теоретическая оптимальность DP относится только к **аддитивной математической модели** с заданными затратами. Выигрыш на физических неоднородных узлах не подтверждён.
+4. Размер выходного тензора не равен реальному трафику сетевой карты.
+5. Отличия между отдельно проведёнными сериями времени нельзя непосредственно сравнивать; экспериментальные значения могут зависеть от временной нагрузки виртуальной машины.
+6. Вся серия зафиксирована на tiny-gpt2; DistilGPT2 проверена на небольшой выборке. GPT-2 124M и эксперименты на физических независимых серверах не выполнены.
+
+Данный модуль — **практическая работа**, но публичная статья на Хабре — отдельное задание; подтверждённую ссылку на неё нужно добавить после самостоятельной публикации. [Основной репозиторий](../README.md) · [Научная рукопись](../article.tex).
